@@ -1,5 +1,5 @@
 from django import forms
-
+from django.core.validators import RegexValidator
 
 PAYMENT_TYPE_CHOICES = [
     ("Transfer", "Transfer"),
@@ -9,6 +9,39 @@ PAYMENT_TYPE_CHOICES = [
     ("Mobile Money", "Mobile Money"),
 ]
 
+BANK_CHOICES = [
+    ("Access Bank", "Access Bank"),
+    ("Guaranty Trust Bank (GTBank)", "Guaranty Trust Bank (GTBank)"),
+    ("OPay", "OPay"),
+    ("First Bank", "First Bank"),
+    ("Zenith Bank", "Zenith Bank"),
+    ("United Bank for Africa (UBA)", "United Bank for Africa (UBA)"),
+    ("Moniepoint", "Moniepoint"),
+    ("Stanbic IBTC Bank", "Stanbic IBTC Bank"),
+    ("Standard Chartered Bank", "Standard Chartered Bank"),
+    ("Sterling Bank", "Sterling Bank"),
+    ("Citibank Nigeria", "Citibank Nigeria"),
+    ("Ecobank", "Ecobank"),
+    ("Fidelity Bank", "Fidelity Bank"),
+    ("First City Monument Bank (FCMB)", "First City Monument Bank (FCMB)"),
+    ("Globus Bank", "Globus Bank"),
+    ("Keystone Bank", "Keystone Bank"),
+    ("Lotus Bank", "Lotus Bank"),
+    ("Nova Merchant Bank", "Nova Merchant Bank"),
+    ("Optimus Bank", "Optimus Bank"),
+    ("Parallex Bank", "Parallex Bank"),
+    ("Polaris Bank", "Polaris Bank"),
+    ("PremiumTrust Bank", "PremiumTrust Bank"),
+    ("Providus Bank", "Providus Bank"),
+    ("Signature Bank", "Signature Bank"),
+    ("SunTrust Bank", "SunTrust Bank"),
+    ("Titan Trust Bank", "Titan Trust Bank"),
+    ("Union Bank", "Union Bank"),
+    ("Unity Bank", "Unity Bank"),
+    ("Wema Bank", "Wema Bank"),
+    ("PalmPay", "PalmPay"),
+    ("Kuda", "Kuda"),
+]
 
 class InvoiceGenerateForm(forms.Form):
     billed_to_name = forms.CharField(
@@ -49,16 +82,25 @@ class InvoiceGenerateForm(forms.Form):
         initial="Transfer"
     )
     account_number = forms.CharField(
-        max_length=30,
-        required=True,
-        help_text="Your bank account number for payment.",
-        widget=forms.TextInput(attrs={"placeholder": "Your Account Number"})
+        max_length=10,
+        min_length=10,
+        help_text="Enter a 10-digit Nigerian account number.",
+        validators=[
+            RegexValidator(
+                regex=r"^\d{10}$",
+                message="Account number must be exactly 10 digits."
+            )
+        ],
+        widget=forms.TextInput(attrs={
+            "placeholder": "Your 10-digit Account Number",
+            "inputmode": "numeric",
+            "maxlength": "10",
+            "pattern": r"\d{10}",
+        })
     )
-    account_bank = forms.CharField(
-        max_length=100,
-        required=True,
-        help_text="The bank associated with your account number.",
-        widget=forms.TextInput(attrs={"placeholder": "Your Bank Name"})
+    account_bank = forms.ChoiceField(
+        choices=BANK_CHOICES,
+        help_text="Select the bank or fintech linked to the account number.",
     )
     account_name = forms.CharField(
         max_length=150,
