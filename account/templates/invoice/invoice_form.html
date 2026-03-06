@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Generate Invoice</title>
+    <title>CodeX Invoice Generator</title>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -13,59 +13,90 @@
             color: #1f2937;
         }
         .container {
-            max-width: 900px;
+            max-width: 1000px;
             margin: 0 auto;
         }
         .card {
-            background: white;
+            background: #ffffff;
             border-radius: 16px;
             padding: 28px;
             box-shadow: 0 10px 30px rgba(0,0,0,0.06);
         }
-        h1 {
+        h1, h2 {
             margin-top: 0;
-            color: #345695;
+        }
+        p {
+            color: #4b5563;
         }
         .grid {
             display: grid;
             grid-template-columns: 1fr 1fr;
             gap: 18px;
+            margin-bottom: 24px;
         }
         .field {
             display: flex;
             flex-direction: column;
-            margin-bottom: 16px;
         }
-        .field label {
+        .field.full {
+            grid-column: 1 / -1;
+        }
+        label {
             font-weight: 600;
             margin-bottom: 6px;
         }
-        .field input, .field textarea, .field select {
+        input, textarea, select {
             border: 1px solid #d1d5db;
             border-radius: 10px;
             padding: 12px;
             font-size: 14px;
         }
-        .full {
-            grid-column: 1 / -1;
+        .items-table {
+            margin-top: 12px;
+        }
+        .item-row {
+            display: grid;
+            grid-template-columns: 2fr 1fr 1fr auto;
+            gap: 12px;
+            margin-bottom: 12px;
+            align-items: end;
+        }
+        .item-row button {
+            height: 44px;
         }
         .btn {
-            background: #345695;
+            margin-top: 24px;
+            background: #111827;
             color: white;
             border: none;
             padding: 14px 22px;
             border-radius: 10px;
-            cursor: pointer;
             font-size: 15px;
             font-weight: 600;
+            cursor: pointer;
+        }
+        .btn.secondary {
+            background: #374151;
+            margin-top: 0;
         }
         .errors {
             color: #b91c1c;
             font-size: 13px;
             margin-top: 6px;
         }
-        @media (max-width: 700px) {
+        .section {
+            margin-top: 26px;
+            padding-top: 10px;
+            border-top: 1px solid #e5e7eb;
+        }
+        @media (max-width: 800px) {
             .grid {
+                grid-template-columns: 1fr;
+            }
+            .field.full {
+                grid-column: auto;
+            }
+            .item-row {
                 grid-template-columns: 1fr;
             }
         }
@@ -74,30 +105,164 @@
 <body>
 <div class="container">
     <div class="card">
-        <h1>Invoice Generator</h1>
-        <p>Fill in the invoice details, preview the result, then download the PDF.</p>
+        <h1>CodeX Invoice</h1>
+        <p>Fill the fields below and the invoice PDF will download immediately.</p>
 
         <form method="post">
             {% csrf_token %}
 
-            <div class="grid">
-                {% for field in form %}
-                    <div class="field {% if field.name in 'billed_to_address from_address note' %}full{% endif %}">
-                        <label for="{{ field.id_for_label }}">{{ field.label }}</label>
-                        {{ field }}
-                        {% if field.help_text %}
-                            <small>{{ field.help_text }}</small>
-                        {% endif %}
-                        {% for error in field.errors %}
-                            <div class="errors">{{ error }}</div>
-                        {% endfor %}
+            <div class="section">
+                <h2>Billed To</h2>
+                <div class="grid">
+                    <div class="field">
+                        <label for="{{ form.billed_to_name.id_for_label }}">Billed To Name</label>
+                        {{ form.billed_to_name }}
+                        {% for error in form.billed_to_name.errors %}<div class="errors">{{ error }}</div>{% endfor %}
                     </div>
-                {% endfor %}
+
+                    <div class="field">
+                        <label for="{{ form.billed_to_email.id_for_label }}">Billed To Email</label>
+                        {{ form.billed_to_email }}
+                        {% for error in form.billed_to_email.errors %}<div class="errors">{{ error }}</div>{% endfor %}
+                    </div>
+
+                    <div class="field full">
+                        <label for="{{ form.billed_to_address.id_for_label }}">Billed To Address</label>
+                        {{ form.billed_to_address }}
+                        {% for error in form.billed_to_address.errors %}<div class="errors">{{ error }}</div>{% endfor %}
+                    </div>
+                </div>
             </div>
 
-            <button type="submit" class="btn">Preview Invoice</button>
+            <div class="section">
+                <h2>From</h2>
+                <div class="grid">
+                    <div class="field">
+                        <label for="{{ form.from_name.id_for_label }}">From Name</label>
+                        {{ form.from_name }}
+                        {% for error in form.from_name.errors %}<div class="errors">{{ error }}</div>{% endfor %}
+                    </div>
+
+                    <div class="field">
+                        <label for="{{ form.from_email.id_for_label }}">From Email</label>
+                        {{ form.from_email }}
+                        {% for error in form.from_email.errors %}<div class="errors">{{ error }}</div>{% endfor %}
+                    </div>
+
+                    <div class="field full">
+                        <label for="{{ form.from_address.id_for_label }}">From Address</label>
+                        {{ form.from_address }}
+                        {% for error in form.from_address.errors %}<div class="errors">{{ error }}</div>{% endfor %}
+                    </div>
+                </div>
+            </div>
+
+            <div class="section">
+                <h2>Items</h2>
+
+                {% for error in item_errors %}
+                    <div class="errors">{{ error }}</div>
+                {% endfor %}
+
+                <div id="items-container" class="items-table">
+                    <div class="item-row">
+                        <div class="field">
+                            <label>Item</label>
+                            <input type="text" name="item[]" required placeholder="Description of the item or service">
+                        </div>
+                        <div class="field">
+                            <label>Quantity</label>
+                            <input type="number" name="quantity[]" min="1" required placeholder="Number of units">
+                        </div>
+                        <div class="field">
+                            <label>Price</label>
+                            <input type="number" name="amount[]" min="0.01" step="0.01" required placeholder="Price per unit">
+                        </div>
+                        <button type="button" class="btn secondary remove-item">Remove</button>
+                    </div>
+                </div>
+
+                <button type="button" id="add-item-btn" class="btn secondary">Add Another Item</button>
+            </div>
+
+            <div class="section">
+                <h2>Payment Details</h2>
+                <div class="grid">
+                    <div class="field">
+                        <label for="{{ form.payment_type.id_for_label }}">Payment Type</label>
+                        {{ form.payment_type }}
+                        {% for error in form.payment_type.errors %}<div class="errors">{{ error }}</div>{% endfor %}
+                    </div>
+
+                    <div class="field">
+                        <label for="{{ form.account_number.id_for_label }}">Account Number</label>
+                        {{ form.account_number }}
+                        {% for error in form.account_number.errors %}<div class="errors">{{ error }}</div>{% endfor %}
+                    </div>
+
+                    <div class="field">
+                        <label for="{{ form.account_bank.id_for_label }}">Account Bank</label>
+                        {{ form.account_bank }}
+                        {% for error in form.account_bank.errors %}<div class="errors">{{ error }}</div>{% endfor %}
+                    </div>
+
+                    <div class="field">
+                        <label for="{{ form.account_name.id_for_label }}">Account Name</label>
+                        {{ form.account_name }}
+                        {% for error in form.account_name.errors %}<div class="errors">{{ error }}</div>{% endfor %}
+                    </div>
+
+                    <div class="field full">
+                        <label for="{{ form.note.id_for_label }}">Note</label>
+                        {{ form.note }}
+                        {% for error in form.note.errors %}<div class="errors">{{ error }}</div>{% endfor %}
+                    </div>
+                </div>
+            </div>
+
+            <button type="submit" class="btn">Generate & Download Invoice</button>
         </form>
     </div>
 </div>
+
+<script>
+    const itemsContainer = document.getElementById("items-container");
+    const addItemBtn = document.getElementById("add-item-btn");
+
+    function attachRemoveEvents() {
+        document.querySelectorAll(".remove-item").forEach((button) => {
+            button.onclick = function () {
+                const rows = document.querySelectorAll(".item-row");
+                if (rows.length > 1) {
+                    button.closest(".item-row").remove();
+                }
+            };
+        });
+    }
+
+    addItemBtn.addEventListener("click", function () {
+        const row = document.createElement("div");
+        row.className = "item-row";
+        row.innerHTML = `
+            <div class="field">
+                <label>Item</label>
+                <input type="text" name="item[]" required>
+            </div>
+            <div class="field">
+                <label>Quantity</label>
+                <input type="number" name="quantity[]" value="1" min="1" required>
+            </div>
+            <div class="field">
+                <label>Price</label>
+                <input type="number" name="amount[]" min="0.01" step="0.01" required>
+            </div>
+            <button type="button" class="btn secondary remove-item">Remove</button>
+        `;
+        itemsContainer.appendChild(row);
+        attachRemoveEvents();
+    });
+
+    attachRemoveEvents();
+</script>
 </body>
 </html>

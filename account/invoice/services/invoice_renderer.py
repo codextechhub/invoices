@@ -1,41 +1,42 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+from datetime import date
+from decimal import Decimal, ROUND_HALF_UP
+from typing import List, Optional, Tuple
 import io
 import os
 import random
-from dataclasses import dataclass, field
-from datetime import date
-from decimal import Decimal
-from typing import Optional, List
 
 from django.conf import settings
-from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
+from reportlab.lib import colors
 from reportlab.pdfgen import canvas
-from reportlab.lib.utils import ImageReader
 
 
-# -------------------------------------------------------------------
-# Data structures
-# -------------------------------------------------------------------
+Money = Decimal
 
-@dataclass
+
+@dataclass(frozen=True)
 class ContactBlock:
     name: str
     address_line: str
-    email: str = ""
+    email: str
 
 
-@dataclass
+@dataclass(frozen=True)
 class InvoiceLine:
-    description: str
-    qty: Decimal
-    unit_price: Decimal
+    item: str
+    quantity: int
+    price: Money
 
     @property
-    def line_total(self) -> Decimal:
-        return self.qty * self.unit_price
+    def amount(self) -> Money:
+        return (Money(self.quantity) * self.price).quantize(
+            Decimal("0.01"),
+            rounding=ROUND_HALF_UP
+        )
 
 
 @dataclass
@@ -43,254 +44,286 @@ class InvoiceDoc:
     invoice_no: str
     invoice_date: date
     billed_to: ContactBlock
-    sender: ContactBlock
-    lines: List[InvoiceLine] = field(default_factory=list)
-    note: str = ""
-    bank_name: str = ""
-    account_number: str = ""
-    payment_method: str = ""
+    from_block: ContactBlock
+    lines: List[InvoiceLine]
+    payment_method: str
+    note: str
+    currency_symbol = "N "
 
     @property
-    def subtotal(self) -> Decimal:
-        return sum((line.line_total for line in self.lines), Decimal("0.00"))
+    def total(self) -> Money:
+        s = sum((ln.amount for ln in self.lines), Decimal("0.00"))
+        return s.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
-    @property
-    def total(self) -> Decimal:
-        return self.subtotal
+
+def money_fmt(value: Money, currency_symbol: str = "N ") -> str:
+    q = value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    if q == q.to_integral():
+        return f"{currency_symbol}{q:,.0f}"
+    return f"{currency_symbol}{q:,.2f}"
 
 
 @dataclass
 class InvoiceTheme:
-    accent_color: tuple = (52/255, 86/255, 149/255)  # close to your blue logo tone
-    text_dark: tuple = (0.12, 0.12, 0.12)
-    text_muted: tuple = (0.42, 0.42, 0.42)
-    border_light: tuple = (0.88, 0.88, 0.88)
-    page_background: tuple = (1, 1, 1)
+    page_size: Tuple[float, float] = A4
+    template_background_path: Optional[str] = None
+
+    text: colors.Color = colors.Color(0.10, 0.10, 0.10)
+    light_text: colors.Color = colors.Color(0.25, 0.25, 0.25)
+    header_grey: colors.Color = colors.Color(0.92, 0.92, 0.92)
+    rule_grey: colors.Color = colors.Color(0.82, 0.82, 0.82)
+    wave_light: colors.Color = colors.Color(0.83, 0.83, 0.83)
+    wave_dark: colors.Color = colors.Color(0.26, 0.27, 0.27)
+
+    font_reg: str = "Helvetica"
+    font_bold: str = "Helvetica-Bold"
+
+    margin_left: float = 20 * mm
+    margin_right: float = 20 * mm
+    margin_top: float = 18 * mm
+
+    wave_y_shift_mm: float = -70.0
+    table_top_offset_mm: float = 120.0
+    payment_block_gap_mm: float = 10.0
+    billed_from_offset_mm: float = 92.0
+
+    logo_label: str = "YOUR\nLOGO"
+    title_text: str = "INVOICE"
     logo_path: Optional[str] = None
 
 
-# -------------------------------------------------------------------
-# Helpers
-# -------------------------------------------------------------------
-
-def format_money(value: Decimal) -> str:
-    return f"₦{value:,.2f}"
-
-
-def generate_invoice_number() -> str:
-    return f"INV-{date.today().strftime('%Y%m%d')}-{random.randint(1000, 9999)}"
-
-
-# -------------------------------------------------------------------
-# Renderer
-# -------------------------------------------------------------------
-
 class InvoiceRenderer:
-    def __init__(self, doc: InvoiceDoc, theme: InvoiceTheme):
-        self.doc = doc
-        self.theme = theme
-        self.buffer = io.BytesIO()
+    def __init__(self, theme: InvoiceTheme):
+        self.t = theme
+        self._after_table_y = None
 
-    def build_pdf_bytes(self) -> bytes:
-        c = canvas.Canvas(self.buffer, pagesize=A4)
-        width, height = A4
+    def render_to_bytes(self, doc: InvoiceDoc) -> bytes:
+        buffer = io.BytesIO()
+        c = canvas.Canvas(buffer, pagesize=self.t.page_size)
+        W, H = self.t.page_size
 
-        self.draw_background(c, width, height)
-        self.draw_header(c, width, height)
-        self.draw_invoice_meta(c, width, height)
-        self.draw_contact_blocks(c, width, height)
-        self.draw_lines_table(c, width, height)
-        self.draw_payment_section(c, width, height)
-        self.draw_footer(c, width, height)
+        if self.t.template_background_path:
+            c.drawImage(self.t.template_background_path, 0, 0, width=W, height=H, mask="auto")
+        else:
+            self._draw_background_waves(c, W, H)
+
+        self._draw_top_row(c, doc, W, H)
+        self._draw_title_and_date(c, doc, W, H)
+        self._draw_billed_from_blocks(c, doc, W, H)
+        self._draw_items_table(c, doc, W, H)
+        self._draw_payment_and_note(c, doc, W, H)
 
         c.showPage()
         c.save()
-        pdf = self.buffer.getvalue()
-        self.buffer.close()
-        return pdf
 
-    def draw_background(self, c, width, height):
-        c.setFillColorRGB(*self.theme.page_background)
-        c.rect(0, 0, width, height, fill=1, stroke=0)
+        pdf_bytes = buffer.getvalue()
+        buffer.close()
+        return pdf_bytes
 
-    def draw_header(self, c, width, height):
-        top_y = height - 35 * mm
+    def _draw_top_row(self, c: canvas.Canvas, doc: InvoiceDoc, W: float, H: float) -> None:
+        xL = self.t.margin_left
+        xR = W - self.t.margin_right
+        y = H - self.t.margin_top
 
-        if self.theme.logo_path and os.path.exists(self.theme.logo_path):
-            try:
-                logo = ImageReader(self.theme.logo_path)
-                c.drawImage(logo, 18 * mm, top_y - 5 * mm, width=28 * mm, height=28 * mm, mask='auto')
-            except Exception:
-                pass
+        if self.t.logo_path and os.path.exists(self.t.logo_path):
+            c.drawImage(
+                self.t.logo_path,
+                xL, y - 22,
+                width=32 * mm, height=18 * mm,
+                preserveAspectRatio=True,
+                mask="auto"
+            )
+        else:
+            c.setFillColor(self.t.light_text)
+            c.setFont(self.t.font_reg, 12)
+            for i, line in enumerate(self.t.logo_label.split("\n")):
+                c.drawString(xL, y - i * 14, line)
 
-        c.setFillColorRGB(*self.theme.accent_color)
-        c.setFont("Helvetica-Bold", 22)
-        c.drawRightString(width - 18 * mm, top_y + 5 * mm, "INVOICE")
+        c.setFont(self.t.font_reg, 12)
+        c.drawRightString(xR, y, f"NO. {doc.invoice_no}")
 
-        c.setStrokeColorRGB(*self.theme.border_light)
-        c.setLineWidth(1)
-        c.line(18 * mm, top_y - 10 * mm, width - 18 * mm, top_y - 10 * mm)
+    def _draw_title_and_date(self, c: canvas.Canvas, doc: InvoiceDoc, W: float, H: float) -> None:
+        xL = self.t.margin_left
+        y_title = H - self.t.margin_top - 48 * mm
 
-    def draw_invoice_meta(self, c, width, height):
-        x = width - 75 * mm
-        y = height - 55 * mm
+        c.setFillColor(self.t.text)
+        c.setFont(self.t.font_bold, 64)
+        c.drawString(xL, y_title, self.t.title_text)
 
-        c.setFont("Helvetica", 10)
-        c.setFillColorRGB(*self.theme.text_muted)
-        c.drawString(x, y, "Invoice No:")
-        c.drawString(x, y - 7 * mm, "Date:")
+        y_date = y_title - 20 * mm
+        c.setFont(self.t.font_bold, 14)
+        c.drawString(xL, y_date, "Date:")
+        c.setFont(self.t.font_reg, 14)
+        c.drawString(xL + 22 * mm, y_date, doc.invoice_date.strftime("%d %B %Y"))
 
-        c.setFillColorRGB(*self.theme.text_dark)
-        c.setFont("Helvetica-Bold", 10)
-        c.drawString(x + 28 * mm, y, self.doc.invoice_no)
-        c.drawString(x + 28 * mm, y - 7 * mm, self.doc.invoice_date.strftime("%d %b %Y"))
+    def _draw_billed_from_blocks(self, c: canvas.Canvas, doc: InvoiceDoc, W: float, H: float) -> None:
+        xL = self.t.margin_left
+        xMid = W * 0.56
+        y0 = H - self.t.margin_top - (self.t.billed_from_offset_mm * mm)
 
-    def draw_contact_blocks(self, c, width, height):
-        left_x = 18 * mm
-        right_x = 105 * mm
-        y = height - 85 * mm
+        c.setFillColor(self.t.text)
+        c.setFont(self.t.font_bold, 14)
+        c.drawString(xL, y0, "Billed to:")
+        c.setFont(self.t.font_reg, 14)
+        c.drawString(xL, y0 - 16, doc.billed_to.name)
+        c.drawString(xL, y0 - 32, doc.billed_to.address_line)
+        c.drawString(xL, y0 - 48, doc.billed_to.email)
 
-        # Billed To
-        c.setFillColorRGB(*self.theme.accent_color)
-        c.setFont("Helvetica-Bold", 11)
-        c.drawString(left_x, y, "Billed To")
+        c.setFont(self.t.font_bold, 14)
+        c.drawString(xMid, y0, "From:")
+        c.setFont(self.t.font_reg, 14)
+        c.drawString(xMid, y0 - 16, doc.from_block.name)
+        c.drawString(xMid, y0 - 32, doc.from_block.address_line)
+        c.drawString(xMid, y0 - 48, doc.from_block.email)
 
-        c.setFillColorRGB(*self.theme.text_dark)
-        c.setFont("Helvetica-Bold", 10)
-        c.drawString(left_x, y - 8 * mm, self.doc.billed_to.name)
-        c.setFont("Helvetica", 9)
-        c.drawString(left_x, y - 14 * mm, self.doc.billed_to.address_line[:70])
-        if self.doc.billed_to.email:
-            c.drawString(left_x, y - 20 * mm, self.doc.billed_to.email)
+    def _draw_items_table(self, c: canvas.Canvas, doc: InvoiceDoc, W: float, H: float) -> None:
+        xL = self.t.margin_left
+        xR = W - self.t.margin_right
+        table_top = H - self.t.margin_top - (self.t.table_top_offset_mm * mm)
+        row_h = 14 * mm
 
-        # From
-        c.setFillColorRGB(*self.theme.accent_color)
-        c.setFont("Helvetica-Bold", 11)
-        c.drawString(right_x, y, "From")
+        col_item_w = (xR - xL) * 0.48
+        col_qty_w = (xR - xL) * 0.17
+        col_price_w = (xR - xL) * 0.17
 
-        c.setFillColorRGB(*self.theme.text_dark)
-        c.setFont("Helvetica-Bold", 10)
-        c.drawString(right_x, y - 8 * mm, self.doc.sender.name)
-        c.setFont("Helvetica", 9)
-        c.drawString(right_x, y - 14 * mm, self.doc.sender.address_line[:70])
-        if self.doc.sender.email:
-            c.drawString(right_x, y - 20 * mm, self.doc.sender.email)
+        x_item = xL
+        x_qty = x_item + col_item_w
+        x_price = x_qty + col_qty_w
 
-    def draw_lines_table(self, c, width, height):
-        table_x = 18 * mm
-        table_y = height - 125 * mm
-        table_w = width - 36 * mm
-        row_h = 10 * mm
+        c.setFillColor(self.t.header_grey)
+        c.rect(xL, table_top - row_h, xR - xL, row_h, stroke=0, fill=1)
 
-        # Header
-        c.setFillColorRGB(*self.theme.accent_color)
-        c.rect(table_x, table_y, table_w, row_h, fill=1, stroke=0)
+        c.setFillColor(self.t.text)
+        c.setFont(self.t.font_reg, 14)
+        c.drawString(x_item + 10 * mm, table_top - 0.70 * row_h, "Item")
+        c.drawString(x_qty + 2 * mm, table_top - 0.70 * row_h, "Quantity")
+        c.drawString(x_price + 2 * mm, table_top - 0.70 * row_h, "Price")
+        c.drawRightString(xR - 10 * mm, table_top - 0.70 * row_h, "Amount")
 
-        c.setFillColor(colors.white)
-        c.setFont("Helvetica-Bold", 10)
-        c.drawString(table_x + 4 * mm, table_y + 3.2 * mm, "Description")
-        c.drawString(table_x + 105 * mm, table_y + 3.2 * mm, "Qty")
-        c.drawString(table_x + 125 * mm, table_y + 3.2 * mm, "Unit Price")
-        c.drawString(table_x + 160 * mm, table_y + 3.2 * mm, "Total")
+        y = table_top - row_h - 6 * mm
+        c.setFont(self.t.font_reg, 14)
 
-        current_y = table_y - row_h
+        for ln in doc.lines:
+            y -= 12 * mm
+            c.drawString(x_item + 10 * mm, y, ln.item[:40])
+            c.drawString(x_qty + 12 * mm, y, str(ln.quantity))
+            c.drawRightString(x_price + col_price_w - 10 * mm, y, money_fmt(ln.price, doc.currency_symbol))
+            c.drawRightString(xR - 10 * mm, y, money_fmt(ln.amount, doc.currency_symbol))
 
-        c.setStrokeColorRGB(*self.theme.border_light)
-        c.setFillColorRGB(1, 1, 1)
+        div_y = y - 10 * mm
+        c.setStrokeColor(self.t.rule_grey)
+        c.setLineWidth(2)
+        c.line(xL + 6 * mm, div_y, xR - 6 * mm, div_y)
 
-        for line in self.doc.lines:
-            c.rect(table_x, current_y, table_w, row_h, fill=1, stroke=1)
+        total_y = div_y - 14 * mm
+        c.setFillColor(self.t.text)
+        c.setFont(self.t.font_bold, 16)
+        c.drawString(x_price + 10 * mm, total_y, "Total")
+        c.drawRightString(xR - 10 * mm, total_y, money_fmt(doc.total, doc.currency_symbol))
 
-            c.setFillColorRGB(*self.theme.text_dark)
-            c.setFont("Helvetica", 9)
-            c.drawString(table_x + 4 * mm, current_y + 3.2 * mm, line.description[:45])
-            c.drawString(table_x + 107 * mm, current_y + 3.2 * mm, f"{line.qty}")
-            c.drawRightString(table_x + 157 * mm, current_y + 3.2 * mm, format_money(line.unit_price))
-            c.drawRightString(table_x + 191 * mm, current_y + 3.2 * mm, format_money(line.line_total))
+        bot_div_y = total_y - 10 * mm
+        c.setStrokeColor(self.t.rule_grey)
+        c.setLineWidth(2)
+        c.line(xL + 6 * mm, bot_div_y, xR - 6 * mm, bot_div_y)
 
-            current_y -= row_h
+        self._after_table_y = bot_div_y
 
-        # Total box
-        total_y = current_y - 8 * mm
-        c.setFillColorRGB(*self.theme.accent_color)
-        c.rect(table_x + 130 * mm, total_y, 62 * mm, 12 * mm, fill=1, stroke=0)
+    def _draw_payment_and_note(self, c: canvas.Canvas, doc: InvoiceDoc, W: float, H: float) -> None:
+        xL = self.t.margin_left
+        y = (self._after_table_y or (H * 0.35)) - (self.t.payment_block_gap_mm * mm)
 
-        c.setFillColor(colors.white)
-        c.setFont("Helvetica-Bold", 11)
-        c.drawString(table_x + 135 * mm, total_y + 4 * mm, "Total")
-        c.drawRightString(table_x + 187 * mm, total_y + 4 * mm, format_money(self.doc.total))
+        c.setFillColor(self.t.text)
 
-    def draw_payment_section(self, c, width, height):
-        y = height - 215 * mm
-        x = 18 * mm
+        c.setFont(self.t.font_bold, 14)
+        c.drawString(xL, y, "Payment method:")
+        c.setFont(self.t.font_reg, 14)
+        c.drawString(xL + 48 * mm, y, doc.payment_method[:75])
 
-        c.setFillColorRGB(*self.theme.accent_color)
-        c.setFont("Helvetica-Bold", 11)
-        c.drawString(x, y, "Payment Details")
+        y -= 10 * mm
+        c.setFont(self.t.font_bold, 14)
+        c.drawString(xL, y, "Note:")
+        c.setFont(self.t.font_reg, 14)
+        c.drawString(xL + 18 * mm, y, doc.note[:90])
 
-        c.setFillColorRGB(*self.theme.text_dark)
-        c.setFont("Helvetica", 9)
-        c.drawString(x, y - 8 * mm, f"Bank Name: {self.doc.bank_name}")
-        c.drawString(x, y - 15 * mm, f"Account Number: {self.doc.account_number}")
-        c.drawString(x, y - 22 * mm, f"Payment Method: {self.doc.payment_method}")
+    def _draw_background_waves(self, c: canvas.Canvas, W: float, H: float) -> None:
+        y_shift = self.t.wave_y_shift_mm * mm
 
-        if self.doc.note:
-            c.setFillColorRGB(*self.theme.accent_color)
-            c.setFont("Helvetica-Bold", 11)
-            c.drawString(x, y - 35 * mm, "Note")
+        c.setFillColor(self.t.wave_light)
+        p = c.beginPath()
+        p.moveTo(0, 0 + y_shift)
+        p.lineTo(0, 88 * mm + y_shift)
+        p.curveTo(W * 0.18, 140 * mm + y_shift, W * 0.40, 120 * mm + y_shift, W * 0.58, 90 * mm + y_shift)
+        p.curveTo(W * 0.74, 65 * mm + y_shift, W * 0.82, 40 * mm + y_shift, W * 0.92, 0 + y_shift)
+        p.close()
+        c.drawPath(p, fill=1, stroke=0)
 
-            c.setFillColorRGB(*self.theme.text_dark)
-            c.setFont("Helvetica", 9)
-            c.drawString(x, y - 43 * mm, self.doc.note[:100])
-
-    def draw_footer(self, c, width, height):
-        c.setStrokeColorRGB(*self.theme.border_light)
-        c.line(18 * mm, 20 * mm, width - 18 * mm, 20 * mm)
-
-        c.setFillColorRGB(*self.theme.text_muted)
-        c.setFont("Helvetica", 8)
-        c.drawCentredString(width / 2, 14 * mm, "Generated by CodeX Invoice Portal")
+        c.setFillColor(self.t.wave_dark)
+        p2 = c.beginPath()
+        p2.moveTo(0, 0 + y_shift)
+        p2.lineTo(0, 38 * mm + y_shift)
+        p2.curveTo(W * 0.22, 70 * mm + y_shift, W * 0.48, 58 * mm + y_shift, W * 0.62, 40 * mm + y_shift)
+        p2.curveTo(W * 0.76, 22 * mm + y_shift, W * 0.86, 35 * mm + y_shift, W, 110 * mm + y_shift)
+        p2.lineTo(W, 0 + y_shift)
+        p2.close()
+        c.drawPath(p2, fill=1, stroke=0)
 
 
-def build_invoice_pdf(form_data: dict) -> tuple[bytes, str]:
+def generate_invoice_number() -> str:
+    return str(random.randint(100001, 999999))
+
+
+def build_payment_method_sentence(payment_type: str, account_number: str, account_bank: str, account_name: str) -> str:
+    return f"{payment_type} [{account_number} - {account_bank} - {account_name}]"
+
+
+def build_invoice_pdf_from_payload(payload: dict) -> tuple[bytes, str]:
     logo_path = os.path.join(settings.BASE_DIR, "static", "images", "logo-watermark.jpg")
-
     invoice_no = generate_invoice_number()
 
     billed_to = ContactBlock(
-        name=form_data["billed_to_name"],
-        address_line=form_data["billed_to_address"],
-        email=form_data.get("billed_to_email", ""),
+        name=payload["billed_to_name"],
+        address_line=payload["billed_to_address"],
+        email=payload["billed_to_email"],
     )
 
-    sender = ContactBlock(
-        name=form_data["from_name"],
-        address_line=form_data["from_address"],
-        email=form_data.get("from_email", ""),
+    from_block = ContactBlock(
+        name=payload["from_name"],
+        address_line=payload["from_address"],
+        email=payload["from_email"],
     )
 
-    amount = Decimal(form_data["amount"])
+    lines = [
+        InvoiceLine(
+            item=item["item"],
+            quantity=item["quantity"],
+            price=item["price"],
+        )
+        for item in payload["items"]
+    ]
+
+    payment_method = build_payment_method_sentence(
+        payment_type=payload["payment_type"],
+        account_number=payload["account_number"],
+        account_bank=payload["account_bank"],
+        account_name=payload["account_name"],
+    )
 
     doc = InvoiceDoc(
         invoice_no=invoice_no,
         invoice_date=date.today(),
         billed_to=billed_to,
-        sender=sender,
-        lines=[
-            InvoiceLine(
-                description="Payment",
-                qty=Decimal("1"),
-                unit_price=amount,
-            )
-        ],
-        note=form_data.get("note", ""),
-        bank_name=form_data["bank_name"],
-        account_number=form_data["account_number"],
-        payment_method=form_data["payment_method"],
+        from_block=from_block,
+        lines=lines,
+        payment_method=payment_method,
+        note=payload["note"],
     )
 
-    theme = InvoiceTheme(logo_path=logo_path)
-    renderer = InvoiceRenderer(doc=doc, theme=theme)
-    pdf_bytes = renderer.build_pdf_bytes()
+    theme = InvoiceTheme(
+        wave_y_shift_mm=-70.0,
+        table_top_offset_mm=120.0,
+        payment_block_gap_mm=10.0,
+        logo_path=logo_path,
+    )
 
+    pdf_bytes = InvoiceRenderer(theme).render_to_bytes(doc)
     return pdf_bytes, invoice_no

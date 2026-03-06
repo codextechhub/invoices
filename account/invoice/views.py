@@ -1,60 +1,90 @@
-import base64
+from decimal import Decimal, InvalidOperation
 
 from django.http import HttpResponse
-from django.shortcuts import render, redirect
+from django.shortcuts import render
 from django.views.decorators.http import require_http_methods
 
 from .forms import InvoiceGenerateForm
-from .services.invoice_renderer import build_invoice_pdf
+from .services.invoice_renderer import build_invoice_pdf_from_payload
+
+
+def _build_items_from_post(post_data):
+    item_names = post_data.getlist("item[]")
+    quantities = post_data.getlist("quantity[]")
+    prices = post_data.getlist("amount[]")
+
+    items = []
+    errors = []
+
+    row_count = max(len(item_names), len(quantities), len(prices))
+
+    for index in range(row_count):
+        item_name = item_names[index].strip() if index < len(item_names) else ""
+        quantity_raw = quantities[index].strip() if index < len(quantities) else ""
+        price_raw = prices[index].strip() if index < len(prices) else ""
+
+        if not item_name and not quantity_raw and not price_raw:
+            continue
+
+        if not item_name:
+            errors.append(f"Item row {index + 1}: item name is required.")
+            continue
+
+        try:
+            quantity = int(quantity_raw)
+            if quantity < 1:
+                raise ValueError
+        except (TypeError, ValueError):
+            errors.append(f"Item row {index + 1}: quantity must be a whole number greater than 0.")
+            continue
+
+        try:
+            price = Decimal(price_raw)
+            if price <= 0:
+                raise ValueError
+        except (InvalidOperation, TypeError, ValueError):
+            errors.append(f"Item row {index + 1}: price must be a valid amount greater than 0.")
+            continue
+
+        items.append({
+            "item": item_name,
+            "quantity": quantity,
+            "price": price,
+        })
+
+    if not items:
+        errors.append("Please add at least one invoice item.")
+
+    return items, errors
 
 
 @require_http_methods(["GET", "POST"])
 def invoice_form_view(request):
+    item_errors = []
+
     if request.method == "POST":
         form = InvoiceGenerateForm(request.POST)
-        if form.is_valid():
-            pdf_bytes, invoice_no = build_invoice_pdf(form.cleaned_data)
+        items, item_errors = _build_items_from_post(request.POST)
 
-            request.session["invoice_pdf_base64"] = base64.b64encode(pdf_bytes).decode("utf-8")
-            request.session["invoice_number"] = invoice_no
-            request.session["invoice_form_data"] = form.cleaned_data
+        if form.is_valid() and not item_errors:
+            payload = {
+                **form.cleaned_data,
+                "items": items,
+            }
 
-            return redirect("invoice-preview")
+            pdf_bytes, invoice_no = build_invoice_pdf_from_payload(payload)
+
+            response = HttpResponse(pdf_bytes, content_type="application/pdf")
+            response["Content-Disposition"] = f'attachment; filename="invoice-{invoice_no}.pdf"'
+            return response
     else:
         form = InvoiceGenerateForm()
 
-    return render(request, "invoices/invoice_form.html", {"form": form})
-
-
-@require_http_methods(["GET"])
-def invoice_preview_view(request):
-    pdf_base64 = request.session.get("invoice_pdf_base64")
-    invoice_number = request.session.get("invoice_number")
-    form_data = request.session.get("invoice_form_data")
-
-    if not pdf_base64:
-        return redirect("invoice-form")
-
-    pdf_data_url = f"data:application/pdf;base64,{pdf_base64}"
-
-    context = {
-        "pdf_data_url": pdf_data_url,
-        "invoice_number": invoice_number,
-        "form_data": form_data,
-    }
-    return render(request, "invoices/invoice_preview.html", context)
-
-
-@require_http_methods(["GET"])
-def invoice_download_view(request):
-    pdf_base64 = request.session.get("invoice_pdf_base64")
-    invoice_number = request.session.get("invoice_number", "invoice")
-
-    if not pdf_base64:
-        return redirect("invoice-form")
-
-    pdf_bytes = base64.b64decode(pdf_base64)
-
-    response = HttpResponse(pdf_bytes, content_type="application/pdf")
-    response["Content-Disposition"] = f'attachment; filename="{invoice_number}.pdf"'
-    return response
+    return render(
+        request,
+        "invoice/invoice_form.html",
+        {
+            "form": form,
+            "item_errors": item_errors,
+        },
+    )

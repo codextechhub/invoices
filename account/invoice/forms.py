@@ -1,44 +1,75 @@
-from decimal import Decimal
 from django import forms
 
 
-PAYMENT_METHOD_CHOICES = [
-    ("bank_transfer", "Bank Transfer"),
-    ("cash", "Cash"),
-    ("card", "Card"),
-    ("pos", "POS"),
-    ("mobile_money", "Mobile Money"),
-    ("other", "Other"),
+PAYMENT_TYPE_CHOICES = [
+    ("Transfer", "Transfer"),
+    ("Cash", "Cash"),
+    ("Card", "Card"),
+    ("POS", "POS"),
+    ("Mobile Money", "Mobile Money"),
 ]
 
 
 class InvoiceGenerateForm(forms.Form):
-    # Billed To
-    billed_to_name = forms.CharField(max_length=150)
-    billed_to_address = forms.CharField(widget=forms.Textarea(attrs={"rows": 3}))
-    billed_to_email = forms.EmailField(required=False)
+    billed_to_name = forms.CharField(
+        max_length=150,
+        initial="CodeX Nigeria",
+        help_text="The company or individual being billed.",
+    )
+    billed_to_address = forms.CharField(
+        max_length=255,
+        initial="Lagos",
+        help_text="The address of the company or individual being billed."
+    )
+    billed_to_email = forms.EmailField(
+        initial="accounts@codexng.com",
+        help_text="The email of the company or individual being billed."
+    )
 
-    # From
-    from_name = forms.CharField(max_length=150, initial="CodeX")
+    from_name = forms.CharField(
+        max_length=150,
+        required=True,
+        help_text="The name of the company or individual sending the invoice.",
+        widget=forms.TextInput(attrs={"placeholder": "Your Name"})
+    )
     from_address = forms.CharField(
-        widget=forms.Textarea(attrs={"rows": 3}),
-        initial="CodeX Nigeria"
-    )
-    from_email = forms.EmailField(required=False, initial="accounts@codexng.com")
-
-    # Payment details
-    amount = forms.DecimalField(max_digits=12, decimal_places=2, min_value=Decimal("0.01"))
-    account_number = forms.CharField(max_length=30)
-    bank_name = forms.CharField(max_length=120)
-    payment_method = forms.ChoiceField(choices=PAYMENT_METHOD_CHOICES)
-    note = forms.CharField(
+        max_length=255,
         required=False,
-        widget=forms.Textarea(attrs={"rows": 3}),
-        help_text="Optional note or narration"
+        help_text="The address of the company or individual sending the invoice.",
+        widget=forms.TextInput(attrs={"placeholder": "Your Address"})
+    )
+    from_email = forms.EmailField(
+        required=False,
+        help_text="The email of the company or individual sending the invoice.",
+        widget=forms.EmailInput(attrs={"placeholder": "Your Email"})
     )
 
-    def clean_account_number(self):
-        value = self.cleaned_data["account_number"].strip()
-        if not value.replace("-", "").replace(" ", "").isdigit():
-            raise forms.ValidationError("Account number should contain only digits, spaces, or hyphens.")
-        return value
+    payment_type = forms.ChoiceField(
+        choices=PAYMENT_TYPE_CHOICES,
+        initial="Transfer"
+    )
+    account_number = forms.CharField(
+        max_length=30,
+        required=True,
+        help_text="Your bank account number for payment.",
+        widget=forms.TextInput(attrs={"placeholder": "Your Account Number"})
+    )
+    account_bank = forms.CharField(
+        max_length=100,
+        required=True,
+        help_text="The bank associated with your account number.",
+        widget=forms.TextInput(attrs={"placeholder": "Your Bank Name"})
+    )
+    account_name = forms.CharField(
+        max_length=150,
+        required=True,
+        help_text="The name associated with your account number.",
+        widget=forms.TextInput(attrs={"placeholder": "Your Account Name"})
+    )
+
+    note = forms.CharField(
+        max_length=255,
+        required=False,
+        initial="Thank you for investing in CodeX!",
+        widget=forms.TextInput(attrs={"placeholder": "Optional note"})
+    )
