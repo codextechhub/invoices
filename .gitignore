@@ -1,0 +1,6 @@
+
+# Machine and build files, never part of the project.
+.DS_Store
+__pycache__/
+*.pyc
+.idea/
