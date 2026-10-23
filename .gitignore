@@ -4,3 +4,6 @@
 __pycache__/
 *.pyc
 .idea/
+
+# Local Python environment; rebuild it from requirements.txt.
+/venv/
